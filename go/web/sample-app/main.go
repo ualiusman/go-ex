@@ -1,12 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"html/template"
 	"log"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/freshman-tech/news-demo-starter-files/news"
@@ -15,10 +18,17 @@ import (
 
 var tpl = template.Must(template.ParseFiles("index.html"))
 
+type Search struct {
+	Query      string
+	NextPage   int
+	TotalPages int
+	Results    *news.Results
+}
+
 func searchHandler(newsapi *news.Client) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		u, err := url.Parse(r.URL.String())
-		if err != nil{
+		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -26,7 +36,7 @@ func searchHandler(newsapi *news.Client) http.HandlerFunc {
 		params := u.Query()
 		searchQuery := params.Get("q")
 		page := params.Get("page")
-		if page ==""{
+		if page == "" {
 			page = "1"
 		}
 
@@ -36,6 +46,32 @@ func searchHandler(newsapi *news.Client) http.HandlerFunc {
 			return
 		}
 
+		nextPage, err := strconv.Atoi(page)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		search := &Search{
+			Query:      searchQuery,
+			NextPage:   nextPage,
+			TotalPages: int(math.Ceil(float64(results.TotalResults) / float64(newsapi.PageSize))),
+			Results:    results,
+		}
+
+		if ok := !search.IsLastPage(); ok {
+			search.NextPage++
+		}
+
+		buf := &bytes.Buffer{}
+		err = tpl.Execute(buf, search)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		buf.WriteTo(w)
+
 		fmt.Printf("%+v", results)
 
 		fmt.Println("Search query is: ", searchQuery)
@@ -44,10 +80,31 @@ func searchHandler(newsapi *news.Client) http.HandlerFunc {
 }
 
 func indexHandler(w http.ResponseWriter, r *http.Request) {
-	tpl.Execute(w,nil)
+	buf := &bytes.Buffer{}
+	err := tpl.Execute(buf, nil)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	buf.WriteTo(w)
 }
 
+func (s *Search) IsLastPage() bool {
+	return s.NextPage >= s.TotalPages
+}
 
+func (s *Search) CurrentPage() int {
+	if s.NextPage == 1 {
+		return s.NextPage
+	}
+
+	return s.NextPage - 1
+}
+
+func (s *Search) PreviousPage() int {
+	return s.CurrentPage() - 1
+}
 
 func main() {
 	err := godotenv.Load()
@@ -60,14 +117,14 @@ func main() {
 	}
 
 	apiKey := os.Getenv("NEWS_API_KEY")
-	if apiKey == ""{
+	if apiKey == "" {
 		log.Fatal(" Env: api key must be set")
 	}
 
 	myClient := &http.Client{Timeout: 10 * time.Second}
 
 	fs := http.FileServer(http.Dir("assets"))
-	newsapi := news.NewClient(myClient,apiKey,20)
+	newsapi := news.NewClient(myClient, apiKey, 20)
 
 	mux := http.NewServeMux()
 	mux.Handle("/assets/", http.StripPrefix("/assets/", fs))
